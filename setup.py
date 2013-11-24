@@ -35,9 +35,13 @@ class BuildWithPly(build):
     def build_nt2(self):
         nt2_dir = 'nt2'
         if not os.path.isdir(nt2_dir):
-            print 'nt2 git reprository not setup, cloning it'
+            print 'nt2 git repository not setup, cloning it'
             cmd = 'git clone https://github.com/MetaScale/nt2.git -b release'
             check_call(cmd.split())
+            # retreive previous nt2 release
+            os.chdir('nt2')
+            check_call('git reset --hard 9024abe687'.split())
+            os.chdir('..')
 
         nt2_build_dir = os.path.join(self.build_temp, nt2_dir)
         if not os.path.isdir(nt2_build_dir):
@@ -201,7 +205,7 @@ class BenchmarkCommand(Command):
 
 
 setup(name='pythran',
-      version='0.3.0',
+      version='0.4.0',
       description='a claimless python to c++ converter',
       author='Serge Guelton',
       author_email='serge.guelton@telecom-bretagne.eu',

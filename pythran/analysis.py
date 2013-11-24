@@ -22,6 +22,8 @@ This module provides a few code analysis for the pythran language.
     * OptimizableComp finds whether a comprehension can be optimized.
     * PotentialIterator finds if it is possible to use an iterator.
     * ArgumentReadOnce counts the usages of each argument of each function
+    * Ancestors computes the ancestors of each node
+    * Scope computes scope information
 '''
 
 from tables import modules, methods, functions
@@ -32,6 +34,8 @@ import intrinsic
 from passmanager import NodeAnalysis, FunctionAnalysis, ModuleAnalysis
 from syntax import PythranSyntaxError
 from itertools import product
+import openmp
+from collections import defaultdict
 
 
 ##
@@ -198,7 +202,7 @@ class LocalDeclarations(NodeAnalysis):
     def visit_Assign(self, node):
         for t in node.targets:
             assert isinstance(t, ast.Name) or isinstance(t, ast.Subscript)
-            if isinstance(t, ast.Name) and not md.get(t, md.LocalVariable):
+            if isinstance(t, ast.Name):
                 self.result.add(t)
 
     def visit_For(self, node):
@@ -227,11 +231,34 @@ class GlobalDeclarations(ModuleAnalysis):
 
 ##
 class Locals(ModuleAnalysis):
-    """Statically compute the value of locals() before each statement"""
+    """
+    Statically compute the value of locals() before each statement
+
+    Yields a dictionary binding every node to the set of variable names defined
+    *before* this node.
+
+    Following snippet illustrates its behavior:
+    >>> import ast, passmanager
+    >>> pm = passmanager.PassManager('test')
+    >>> code = '''
+    ... def b(n):
+    ...     m = n + 1
+    ...     def b(n):
+    ...         return n + 1
+    ...     return b(m)'''
+    >>> tree = ast.parse(code)
+    >>> l = pm.gather(Locals, tree)
+    >>> l[tree.body[0].body[0]]
+    set(['n'])
+    >>> l[tree.body[0].body[1]]
+    set(['b', 'm', 'n'])
+    """
+
     def __init__(self):
         self.result = dict()
         self.locals = set()
-        super(Locals, self).__init__(GlobalDeclarations)
+        self.nesting = 0
+        super(Locals, self).__init__()
 
     def generic_visit(self, node):
         super(Locals, self).generic_visit(node)
@@ -250,8 +277,9 @@ class Locals(ModuleAnalysis):
 
     def visit_FunctionDef(self, node):
         # special case for nested functions
-        if node.name not in self.global_declarations:
+        if self.nesting:
             self.locals.add(node.name)
+        self.nesting += 1
         self.expr_parent = node
         self.result[node] = self.locals.copy()
         parent_locals = self.locals.copy()
@@ -259,6 +287,7 @@ class Locals(ModuleAnalysis):
         self.locals.update(arg.id for arg in node.args.args)
         map(self.visit, node.body)
         self.locals = parent_locals
+        self.nesting -= 1
 
     def visit_Assign(self, node):
         self.expr_parent = node
@@ -393,7 +422,7 @@ class ImportedIds(NodeAnalysis):
     def run(self, node, ctx):
         if isinstance(node, list):  # so that this pass can be called on list
             self.is_list = True
-            node = ast.If(ast.Num(1), node, None)
+            node = ast.If(ast.Num(1), node, [])
         return super(ImportedIds, self).run(node, ctx)
 
 
@@ -410,7 +439,7 @@ class ConstantExpressions(NodeAnalysis):
         return True
 
     def visit_BoolOp(self, node):
-        return all(self.visit(n) for n in node.values) and self.add(node)
+        return all(map(self.visit, node.values)) and self.add(node)
 
     def visit_BinOp(self, node):
         rec = all(map(self.visit, (node.left, node.right)))
@@ -609,7 +638,7 @@ class Aliases(ModuleAnalysis):
         self.generic_visit(node)
         f = node.func
         # special handler for bind functions
-        if isinstance(f, ast.Attribute) and f.attr == "bind":
+        if isinstance(f, ast.Attribute) and f.attr == "partial":
             return self.add(node, {node})
         else:
             return_alias = self.call_return_alias(node)
@@ -1809,3 +1838,91 @@ class HasContinue(NodeAnalysis):
 
     def visit_Continue(self, node):
         self.result = True
+
+
+class Ancestors(ModuleAnalysis):
+    '''
+    Associate each node with the list of its ancestors
+
+    Based on the tree view of the AST: each node has the Module as parent.
+    The result of this analysis is a dictionary with nodes as key,
+    and list of nodes as values.
+    '''
+
+    def __init__(self):
+        self.result = dict()
+        self.current = list()
+        super(Ancestors, self).__init__()
+
+    def generic_visit(self, node):
+        self.result[node] = list(self.current)
+        self.current.append(node)
+        super(Ancestors, self).generic_visit(node)
+        self.current.pop()
+
+
+class Scope(FunctionAnalysis):
+    '''
+    Associate each variable declaration with the node that defines it
+
+    Whenever possible, associate the variable declaration to an assignment,
+    otherwise to a node that defines a bloc (e.g. a For)
+    This takes OpenMP information into accounts!
+    The result is a dictionary with nodes as key and set of names as values
+    '''
+
+    def __init__(self):
+        self.result = defaultdict(lambda: set())
+        self.decl_holders = (ast.FunctionDef, ast.For,
+                             ast.While, ast.TryExcept)
+        super(Scope, self).__init__(Ancestors, UsedDefChain)
+
+    def visit_OMPDirective(self, node):
+        for dep in node.deps:
+            if type(dep) is ast.Name:
+                self.openmp_deps.setdefault(dep.id, []).append(dep)
+
+    def visit_FunctionDef(self, node):
+        # first gather some info about OpenMP declarations
+        self.openmp_deps = dict()
+        self.generic_visit(node)
+
+        # then compute scope informations
+        # unlike used-def chains, this takes OpenMP annotations into account
+        for name, udgraph in self.used_def_chain.iteritems():
+            # get all refs to that name
+            refs = [udgraph.node[n]['name'] for n in udgraph]
+            # add OpenMP refs (well, the parent of the holding stmt)
+            refs.extend(self.ancestors[d][-3]   # -3 to get the right parent
+                    for d in self.openmp_deps.get(name, []))
+            # get their ancestors
+            ancestors = map(self.ancestors.__getitem__, refs)
+            # common ancestors
+            prefixes = filter(lambda x: len(set(x)) == 1, zip(*ancestors))
+            common = prefixes[-1][0]  # the last common ancestor
+
+            # now try to attach the scope to an assignment.
+            # This will be the first assignment found in the bloc
+            if type(common) in self.decl_holders:
+                # get all refs that define that name
+                refs = [udgraph.node[n]['name']
+                        for n in udgraph if udgraph.node[n]['action'] == 'D']
+                refs.extend(self.openmp_deps.get(name, []))
+                # get their parent
+                prefs = set()
+                for r in refs:
+                    if type(self.ancestors[r][-1]) is openmp.OMPDirective:
+                        # point to the parent of the stmt holding the metadata
+                        prefs.add(self.ancestors[r][-4])
+                    else:
+                        prefs.add(self.ancestors[r][-1])
+                # set the defining statement to the first assign in the body
+                # unless another statements uses it before
+                # or the common itselfs holds a dependency
+                if common not in prefs:
+                    for c in common.body:
+                        if c in prefs:
+                            if type(c) is ast.Assign:
+                                common = c
+                            break
+            self.result[common].add(name)

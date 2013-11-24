@@ -404,16 +404,13 @@ namespace  pythonic {
                 {
                     std::copy_n(data.shape.begin(), M, gshape.begin());
                     for(size_t i=0, j=0;i<M;i++) {
+                        gslice[i] = s[i].normalize(data.shape[i]);
                         if(mask[i])
                         {
-                            gslice[i] = s[i].normalize(data.shape[i]);
                             gshape[i] = gslice[i].size();
                             shape[j++] = gshape[i];
                         }
                         else {
-                            gslice[i].lower = (long)s[i].lower;
-                            gslice[i].upper = (long)s[i].upper;
-                            gslice[i].step = (long)s[i].step;
                             gshape[i] = 1;
                         }
                     }
@@ -1056,6 +1053,13 @@ namespace  pythonic {
                         reshappy.shape = shape;
                         return reshappy;
                     }
+
+                core::ndarray<T,N> copy() const {
+                    auto res = core::ndarray<T,N>(shape, __builtin__::None);
+                    std::copy(buffer, buffer + size(), res.buffer);
+                    return res;
+                }
+
 
             };
 
