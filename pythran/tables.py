@@ -25,8 +25,18 @@ pytype_to_ctype_table = {
     float: 'double',
     str: 'pythonic::types::str',
     None: 'void',
-    numpy.int64: 'long long',
+    numpy.int8: 'int8_t',
+    numpy.int16: 'int16_t',
+    numpy.int32: 'int32_t',
+    numpy.int64: 'int64_t',
+    numpy.uint8: 'uint8_t',
+    numpy.uint16: 'uint16_t',
+    numpy.uint32: 'uint32_t',
+    numpy.uint64: 'uint64_t',
+    numpy.float32: 'float',
     numpy.float64: 'double',
+    numpy.complex64: 'std::complex<float>',
+    numpy.complex128: 'std::complex<double>',
     }
 
 type_to_suffix = {
@@ -64,7 +74,7 @@ operator_to_lambda = {
     ast.Sub: lambda l, r: "({0} - {1})".format(l, r),
     ast.Mult: lambda l, r: "({0} * {1})".format(l, r),
     ast.Div: lambda l, r: "({0} / {1})".format(l, r),
-    ast.Mod: lambda l, r: "(pythonic::mod({0}, {1}))".format(l, r),
+    ast.Mod: lambda l, r: "(pythonic::operator_::mod({0}, {1}))".format(l, r),
     ast.Pow: lambda l, r: "pythonic::__builtin__::pow({0}, {1})".format(l, r),
     ast.LShift: lambda l, r: "({0} << {1})".format(l, r),
     ast.RShift: lambda l, r: "({0} >> {1})".format(l, r),
@@ -72,7 +82,8 @@ operator_to_lambda = {
     ast.BitXor: lambda l, r: "({0} ^ {1})".format(l, r),
     ast.BitAnd: lambda l, r: "({0} & {1})".format(l, r),
     #** assume from __future__ import division
-    ast.FloorDiv: lambda l, r: "(pythonic::floordiv({0}, {1}))".format(l, r),
+    ast.FloorDiv: lambda l, r: ("(pythonic::operator_::floordiv"
+                                "({0}, {1}))".format(l, r)),
     # unaryop
     ast.Invert: lambda o: "(~{0})".format(o),
     ast.Not: lambda o: "(not {0})".format(o),
@@ -165,6 +176,7 @@ modules = {
         "file": ConstFunctionIntr(),
         "filter": ReadOnceFunctionIntr(),
         "float_": ConstFunctionIntr(),
+        "getattr": ConstFunctionIntr(),
         "hex": ConstFunctionIntr(),
         "id": ConstFunctionIntr(),
         "int_": ConstFunctionIntr(),
@@ -256,8 +268,10 @@ modules = {
         "conj": ConstFunctionIntr(),
         "conjugate": ConstFunctionIntr(),
         "copy": ConstFunctionIntr(),
-        "copyto": ConstFunctionIntr(),
+        "copyto": FunctionIntr(argument_effects=[UpdateEffect(), ReadEffect(),
+                                                 ReadEffect(), ReadEffect()]),
         "copysign": ConstFunctionIntr(),
+        "count_nonzero": ConstFunctionIntr(),
         "cos": ConstFunctionIntr(),
         "cosh": ConstFunctionIntr(),
         "cumprod": ConstMethodIntr(),
@@ -359,6 +373,7 @@ modules = {
         "nansum": ConstFunctionIntr(),
         "ndenumerate": ConstFunctionIntr(),
         "ndindex": ConstFunctionIntr(),
+        "ndim": ConstFunctionIntr(),
         "negative": ConstFunctionIntr(),
         "nextafter": ConstFunctionIntr(),
         "NINF": ConstantIntr(),
@@ -393,10 +408,12 @@ modules = {
         "round_": ConstFunctionIntr(),
         "searchsorted": ConstFunctionIntr(),
         "select": ConstFunctionIntr(),
+        "shape": ConstFunctionIntr(),
         "sign": ConstFunctionIntr(),
         "signbit": ConstFunctionIntr(),
         "sin": ConstFunctionIntr(),
         "sinh": ConstFunctionIntr(),
+        "size": ConstFunctionIntr(),
         "sometrue": ConstFunctionIntr(),
         "sort": ConstFunctionIntr(),
         "sort_complex": ConstFunctionIntr(),
@@ -426,6 +443,7 @@ modules = {
         "union1d": ConstFunctionIntr(),
         "unique": ConstFunctionIntr(),
         "unwrap": ConstFunctionIntr(),
+        "var": ConstMethodIntr(),
         "where": ConstFunctionIntr(),
         "zeros": ConstFunctionIntr(),
         "zeros_like": ConstFunctionIntr(),
@@ -847,10 +865,10 @@ modules = {
                 register=True)
             ),
         "index": ConstMethodIntr(),
-        #"pop": MethodIntr(), forwarded
+        #"pop": MethodIntr(), dispatched
         "reverse": MethodIntr(),
         "sort": MethodIntr(),
-        "count": ConstMethodIntr(),
+        #"count": ConstMethodIntr(), dispatched
         "insert": MethodIntr(
             lambda self, node:
             self.combine(
@@ -862,13 +880,16 @@ modules = {
         },
 
     "__iterator__": {
-        #"next": MethodIntr(), //Dispatched
+        #"next": MethodIntr(), dispatched
         },
     "__str__": {
         "capitalize": ConstMethodIntr(),
+        #"count": ConstMethodIntr(), dispatched
         "endswith": ConstMethodIntr(),
         "startswith": ConstMethodIntr(),
         "find": ConstMethodIntr(),
+        "isalpha": ConstMethodIntr(),
+        "isdigit": ConstMethodIntr(),
         "join": ConstMethodIntr(),
         "lower": ConstMethodIntr(),
         "replace": ConstMethodIntr(),
@@ -889,20 +910,8 @@ modules = {
             ),
         "discard": MethodIntr(),
         "isdisjoint": ConstMethodIntr(),
-        "union_": ConstMethodIntr(lambda self, node:
-                                  [self.combine(
-                                      node.args[0],
-                                      node_args_k,
-                                      register=True)
-                                   for node_args_k in node.args[1:]]
-                                  ),
-        "intersection": ConstMethodIntr(lambda self, node:
-                                        [self.combine(
-                                            node.args[0],
-                                            node_args_k,
-                                            register=True)
-                                         for node_args_k in node.args[1:]]
-                                        ),
+        "union_": ConstMethodIntr(),
+        "intersection": ConstMethodIntr(),
         "intersection_update": MethodIntr(
             lambda self, node:
             [
@@ -913,16 +922,7 @@ modules = {
                 for node_args_k in node.args[1:]
                 ]
             ),
-        "difference": ConstMethodIntr(
-            lambda self, node:
-            [
-                self.combine(
-                    node.args[0],
-                    node_args_k,
-                    register=True)
-                for node_args_k in node.args[1:]
-                ]
-            ),
+        "difference": ConstMethodIntr(),
         "difference_update": MethodIntr(
             lambda self, node:
             [
@@ -933,16 +933,7 @@ modules = {
                 for node_args_k in node.args[1:]
                 ]
             ),
-        "symmetric_difference": ConstMethodIntr(
-            lambda self, node:
-            [
-                self.combine(
-                    node.args[0],
-                    node_args_k,
-                    register=True)
-                for node_args_k in node.args[1:]
-                ]
-            ),
+        "symmetric_difference": ConstMethodIntr(),
         "symmetric_difference_update": MethodIntr(
             lambda self, node:
             [
@@ -979,7 +970,7 @@ modules = {
         "iterkeys": MethodIntr(),
         "itervalues": MethodIntr(),
         "keys": MethodIntr(),
-        #"pop": MethodIntr(), forwarded
+        #"pop": MethodIntr(), dispatched
         "popitem": MethodIntr(),
         "setdefault": MethodIntr(
             lambda self, node:
@@ -1013,7 +1004,7 @@ modules = {
         "flush": MethodIntr(global_effects=True),
         "fileno": MethodIntr(),
         "isatty": MethodIntr(),
-        #"next": MethodIntr(global_effects=True), //Dispatched
+        #"next": MethodIntr(global_effects=True), dispatched
         "read": MethodIntr(global_effects=True),
         "readline": MethodIntr(global_effects=True),
         "readlines": MethodIntr(global_effects=True),
@@ -1047,6 +1038,7 @@ modules = {
     "__dispatch__": {
         "clear": MethodIntr(),
         "copy": ConstMethodIntr(),
+        "count": ConstMethodIntr(),
         "next": MethodIntr(),
         "pop": MethodIntr(),
         "remove": MethodIntr(),

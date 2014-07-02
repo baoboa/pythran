@@ -14,9 +14,7 @@ from cxxgen import *
 import ast
 from middlend import refine
 from backend import Cxx
-from syntax import check_syntax
-from passes import NormalizeIdentifiers, ExtractTopLevelStmts
-from openmp import GatherOMPData
+import frontend
 from config import cfg
 from passmanager import PassManager
 from numpy import get_include
@@ -145,21 +143,9 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
 
     '''
     pm = PassManager(module_name)
-    # hacky way to turn OpenMP comments into strings
-    code = re.sub(r'(\s*)#(omp\s[^\n]+)', r'\1"\2"', code)
 
     # front end
-    ir = ast.parse(code)
-
-    # remove top - level statements
-    pm.apply(ExtractTopLevelStmts, ir)
-
-    # parse openmp directive
-    pm.apply(GatherOMPData, ir)
-
-    # avoid conflicts with cxx keywords
-    renamings = pm.apply(NormalizeIdentifiers, ir)
-    check_syntax(ir)
+    ir, renamings = frontend.parse(pm, code)
 
     # middle-end
     optimizations = (optimizations or
@@ -172,13 +158,16 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
 
     # instanciate the meta program
     if specs is None:
+
         class Generable:
             def __init__(self, content):
                 self.content = content
 
-            def generate(self):
-                return "\n".join("\n".join(l for l in s.generate())
-                                 for s in self.content)
+            def __str__(self):
+                return str(self.content)
+
+            generate = __str__
+
         mod = Generable(content)
     else:
         # uniform typing
@@ -245,9 +234,10 @@ def generate_cxx(module_name, code, specs=None, optimizations=None):
                                                     internal_func_name,
                                                     "<{0}>".format(args_list)
                                                     if has_arguments else "")
-                result_type = ("typename std::remove_reference"
-                               + "<typename {0}::result_type>::type".format(
-                                 specialized_fname))
+                result_type = ("typename std::remove_cv<"
+                               "typename std::remove_reference"
+                               "<typename {0}::result_type>::type"
+                               ">::type").format(specialized_fname)
                 mod.add_to_init(
                     [Statement("pythonic::python_to_pythran<{0}>()".format(t))
                      for t in _extract_all_constructed_types(signature)])
@@ -334,7 +324,8 @@ def compile_pythrancode(module_name, pythrancode, specs=None,
 
     # Autodetect the Pythran spec if not given as parameter
     from spec import spec_parser
-    specs = spec_parser(pythrancode) if specs is None else specs
+    if specs is None:
+        specs = spec_parser(pythrancode)
 
     # Generate C++, get a BoostPythonModule object
     module = generate_cxx(module_name, pythrancode, specs, opts)

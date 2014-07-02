@@ -1,12 +1,12 @@
-===================
-Pythran User Manual
-===================
+===========
+User Manual
+===========
 
 So you want to write algorithms that are easy to maintain as in python and
 you want performance as in FORTRAN or C++? Let give a try to Pythran!
-Pythran is a python-to-c++ translator that turns python module into native 
+Pythran is a python-to-c++ translator that turns python module into native
 c++11 module. From a user point of view, you still ``import`` your module, but
-under the hood... there is much more happening!
+under the hood... There is much more happening!
 
 Disclaimer
 ----------
@@ -38,7 +38,7 @@ Python and to have them run faster. Nuff said.
 Prerequisite
 ------------
 
-Let us assume you're running a Debian/Ubuntu distrib. In that case, all you 
+Let us assume you're running a Debian/Ubuntu distrib. In that case, all you
 have to do is::
 
     $> sudo apt-get install libboost-python-dev libgoogle-perftools-dev libgmp-dev libboost-dev git cmake
@@ -54,7 +54,7 @@ and set your ``PYTHONPATH`` appropriately, something like::
 
 	$> export  PYTHONPATH=<my_prefix>/lib/python<my_version>/site-packages
 
-You also need a modern C++11 enabled compiler (e.g. g++>=4.7), that supports
+You also need a modern C++11 enabled compiler (e.g. g++>=4.8), that supports
 for instance atomic operations (N3290) or variadic template (N2555).
 
 
@@ -114,7 +114,7 @@ To begin with, you need... a python function in a module. Something like::
 	def dprod(l0,l1):
 		return sum([x*y for x,y in zip(l0,l1)])
 
-will be perfect. But due to \_o< typing, ``l0`` and ``l1`` can be of any type,
+is perfect. But due to \_o< typing, ``l0`` and ``l1`` can be of any type,
 so Pythran needs a small hint there. Add the following line somewhere in your
 file, say at the top head, or right before the function definition::
 
@@ -215,12 +215,18 @@ tuples, introduced by parenthesis, like ``(int, (float, str))`` or lists (resp.
 set), introduced by the ``list`` (resp. ``set``) keyword::
 
 	argument_type = basic_type
-				  | (argument_type*)	# this is a tuple
+				  | (argument_type+)	# this is a tuple
 				  | argument_type list	# this is a list
 				  | argument_type set	# this is a set
+				  | argument_type []+	# this is a ndarray
 				  | argument_type:argument_type dict	# this is a dictionary
 
 	basic_type = bool | int | long | float | str
+               | uint8 | uint16 | uint32 | uint64 
+               | int8 | int16 | int32 | int64 
+               | float32 | float64
+               | complex64 | complex128
+
 
 Easy enough, isn't it?
 
@@ -234,8 +240,8 @@ Easy enough, isn't it?
 IPython Integration
 -------------------
 
-The magic function ``%%pythran`` is made available to ipython users through an
-IPython extension. The extension is located in the ``extensions/`` directory
+The magic function ``%%pythran`` is made available to ``ipython`` users through an
+extension. The extension is located in the ``extensions/`` directory
 and can be loaded using IPython's magic function::
 
     %load_ext pythranmagic
@@ -246,6 +252,19 @@ Once done, you can pythranize your code from the IPython shell::
     #pythran export foo()
     def foo(): print 'hello'
 
+Distutils Integration
+---------------------
+
+When distributing a Python application with Pythran modules, you can either:
+
+* declare the module as a regular Python module. After all, they are 100% Python compatible.
+
+* declare them as a ``PythranExtension`` and Pythran will compile them::
+
+    from distutils.core import setup
+    from pythran.dist import PythranExtension
+    setup(...,
+          ext_modules=[PythranExtension("mymodule", ["mymodule.py"])])
 
 Advanced Usage
 --------------
@@ -255,7 +274,7 @@ switch that stops the compilation process right after c++ code generation, so
 that you can inspect it.
 
 Want more performance? Big fan of ``-Ofast -march=native``? Pythran
-automagically forwards these switches to the underlying compiler! Pythran is
+_automagically_ forwards these switches to the underlying compiler! Pythran is
 sensible to the ``-DNDEBUG`` switch too.
 
 Tired of typing the same compiler switches again and again? Store them in
@@ -277,25 +296,32 @@ Adding OpenMP directives
 ------------------------
 
 OpenMP is a standard set of directives for C, C++ and FORTRAN that makes it
-somehow easier to turn a sequential program into a multithreaded one. Pythran
+somehow easier to turn a sequential program into a multi-threaded one. Pythran
 translates OpenMP-like code annotation into OpenMP directives::
 
     r=0
-    "omp parallel for reduction(+:r) private(x,y)"
+    "omp parallel for reduction(+:r)"
     for x,y in zip(l1,l2):
         r+=x*y
 
-Note that as in python, all variables have function-level scope, ``x`` and
-``y`` must be explicitly listed as private variables.
-
 OpenMP directive parsing is enabled by ``-fopenmp`` when using ``g++`` as the
-backend compiler.
+back-end compiler.
 
 Alternatively, one can run the great::
 
     pythran -ppythran.analysis.ParallelMaps -e as.py
 
 which runs a code analyzer that displays extra information concerning parallel ``map`` found in the code.
+
+You may want a more "OpenMP" way to write annotation with::
+
+    r=0
+    #omp parallel for reduction(+:r)
+    for x,y in zip(l1,l2):
+        r+=x*y
+
+Be careful with the indentation. It has to be correct.
+
 
 Getting Pure C++
 ----------------
@@ -310,7 +336,7 @@ F.A.Q.
 
 1. Supported compiler versions:
 
-   - `g++` version 4.7
+   - `g++` version 4.8
 
    - `clang++` version 3.1-8
 

@@ -1,6 +1,7 @@
 #pythran export dist(float [], float[], float[], int, bool, bool, bool)
-#runas import numpy as np ; N = 200 ; x = y = z = np.arange(0., N, 0.1) ; L = 4 ; periodic = True ; dist(x, x, x, L,periodic, periodic, periodic)
-import numpy as np 
+#runas import numpy as np ; N = 20 ; x = np.arange(0., N, 0.1) ; L = 4 ; periodic = True ; dist(x, x, x, L,periodic, periodic, periodic)
+#bench import numpy as np ; N = 300 ; x = np.arange(0., N, 0.1) ; L = 4 ; periodic = True ; dist(x, x, x, L,periodic, periodic, periodic)
+import numpy as np
 
 def dist(x, y, z, L, periodicX, periodicY, periodicZ):
     " ""Computes distances between all particles and places the result in a matrix such that the ij th matrix entry corresponds to the distance between particle i and j"" "

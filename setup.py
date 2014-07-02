@@ -4,7 +4,10 @@ from unittest import TextTestRunner, TestLoader
 import os
 import sys
 import shutil
+import numpy
 from subprocess import check_call
+
+from pythran import __version__
 
 
 def _exclude_current_dir_from_import():
@@ -88,11 +91,14 @@ class TestCommand(Command):
 
     description = 'run the test suite for the package'
     user_options = [('failfast', None, 'Stop upon first fail'),
-                    ('cov', None, 'Perform coverage analysis')]
+                    ('cov', None, 'Perform coverage analysis'),
+                    ('num-threads=', None, 'Number of thread to execute tests')]
 
     def initialize_options(self):
         self.failfast = False
         self.cov = False
+        import multiprocessing
+        self.num_threads = multiprocessing.cpu_count()
 
     def finalize_options(self):
         pass
@@ -109,9 +115,7 @@ class TestCommand(Command):
         try:
             import py
             import xdist
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            args = ["-n", str(cpu_count), where, '--pep8']
+            args = ["-n", str(self.num_threads), where, '--pep8']
             if self.failfast:
                 args.insert(0, '-x')
             if self.cov:
@@ -138,7 +142,7 @@ class TestCommand(Command):
 class BenchmarkCommand(Command):
     '''Scan the test directory for any runnable test, and benchmark them.'''
 
-    default_nb_iter = 11
+    default_nb_iter = 30
     description = 'run the benchmark suite for the package'
     user_options = [
         ('nb-iter=', None,
@@ -148,7 +152,7 @@ class BenchmarkCommand(Command):
          'mode to use (cpython, pythran, pythran' '+omp)')
     ]
 
-    runas_marker = '#runas '
+    runas_marker = '#bench '
 
     def __init__(self, *args, **kwargs):
         Command.__init__(self, *args, **kwargs)
@@ -164,18 +168,17 @@ class BenchmarkCommand(Command):
     def run(self):
         import glob
         import timeit
+        from pythran import test_compile, compile_pythranfile
 
         # Do not include current directory, validate using installed pythran
         current_dir = _exclude_current_dir_from_import()
         os.chdir("pythran/tests")
         where = os.path.join(current_dir, 'pythran', 'tests', 'cases')
 
-        from pythran import test_compile, compile_pythranfile
         test_compile()
 
         candidates = glob.glob(os.path.join(where, '*.py'))
         sys.path.append(where)
-        median = lambda x: sorted(x)[len(x) / 2]
         for candidate in candidates:
             with file(candidate) as content:
                 runas = [line for line in content.readlines()
@@ -203,12 +206,16 @@ class BenchmarkCommand(Command):
                         compile_pythranfile(candidate,
                                             cxxflags=cxxflags)
 
-                    print modname + " running ...",
+                    print modname + " running ..."
                     sys.stdout.flush()
-                    timing = median(ti.repeat(self.nb_iter, number=1))
-                    print timing
+                    timing = numpy.array(ti.repeat(self.nb_iter, number=1))
+                    print "median :", numpy.median(timing)
+                    print "min :", numpy.min(timing)
+                    print "max :", numpy.max(timing)
+                    print "std :", numpy.std(timing)
+                    del sys.modules[modname]
                 else:
-                    print "* Skip '" + candidate + ', no #runas directive'
+                    print "* Skip " + candidate + ', no ' + BenchmarkCommand.runas_marker + ' directive'
 
 
 # Cannot use glob here, as the files may not be genrated yet
@@ -216,32 +223,29 @@ nt2_headers = (['nt2/' + '*/' * i + '*.hpp' for i in range(1, 20)] +
                ['boost/' + '*/' * i + '*.hpp' for i in range(1, 20)])
 
 setup(name='pythran',
-      version='0.4.0',
+      version=__version__,
       description='a claimless python to c++ converter',
       author='Serge Guelton',
       author_email='serge.guelton@telecom-bretagne.eu',
       url='https://github.com/serge-sans-paille/pythran',
-      packages=['pythran', 'omp', 'pythran/pythonic'],
+      packages=['pythran', 'pythran.analyses', 'pythran.transformations',
+                'pythran.optimizations', 'omp', 'pythran/pythonic'],
       package_data={'pythran': ['pythran.cfg'] + nt2_headers,
                     'pythran/pythonic': ['*.hpp', '*/*.hpp']},
-      scripts=['scripts/pythran'],
-      classifiers=[
-      'Development Status :: 4 - Beta',
-      'Environment :: Console',
-      'Intended Audience :: Developers',
-      'License :: OSI Approved :: BSD License',
-      'Natural Language :: English',
-      'Operating System :: POSIX :: Linux',
-      'Programming Language :: Python :: 2.7',
-      'Programming Language :: Python :: Implementation :: CPython',
-      'Programming Language :: C++',
-      'Topic :: Software Development :: Code Generators',
-      ],
+      scripts=['scripts/pythran', 'scripts/pythran-config'],
+      classifiers=['Development Status :: 4 - Beta',
+                   'Environment :: Console',
+                   'Intended Audience :: Developers',
+                   'License :: OSI Approved :: BSD License',
+                   'Natural Language :: English',
+                   'Operating System :: POSIX :: Linux',
+                   'Programming Language :: Python :: 2.7',
+                   'Programming Language :: Python :: Implementation :: CPython',
+                   'Programming Language :: C++',
+                   'Topic :: Software Development :: Code Generators'],
       license="BSD 3-Clause",
       requires=['ply (>=3.4)', 'networkx (>=1.5)', 'numpy', 'colorlog'],
-      cmdclass={
-      'build': BuildWithPly,
-      'test': TestCommand,
-      'bench': BenchmarkCommand
-      }
+      cmdclass={'build': BuildWithPly,
+                'test': TestCommand,
+                'bench': BenchmarkCommand}
       )

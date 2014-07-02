@@ -7,16 +7,20 @@ namespace pythonic {
 
     namespace types {
 
-        template<class T>
+        template<class T, typename EnableDefault = void>
             struct numpy_type {
                 typedef decltype(std::declval<T>()()) type;
             };
-        template<> struct numpy_type<bool> { typedef bool type; };
-        template<> struct numpy_type<int> { typedef int type; };
-        template<> struct numpy_type<long> { typedef long type; };
-        template<> struct numpy_type<double> { typedef double type; };
-        template<> struct numpy_type<std::complex<long>> { typedef std::complex<long> type; };
-        template<> struct numpy_type<std::complex<double>> { typedef std::complex<double> type; };
+
+        template<class T>
+            struct numpy_type<T, typename std::enable_if<std::is_fundamental<T>::value>::type> {
+               typedef T type;
+            };
+
+#define SPECIALIZE_NUMPY_TYPE(TYPE) template<> struct numpy_type<TYPE> { typedef TYPE type; }
+        SPECIALIZE_NUMPY_TYPE(std::complex<float>);
+        SPECIALIZE_NUMPY_TYPE(std::complex<double>);
+#undef SPECIALIZE_NUMPY_TYPE
     }
 
 }

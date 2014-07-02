@@ -5,6 +5,7 @@
 #include "pythonic/types/slice.hpp"
 #include "pythonic/types/list.hpp" // because of [] operator that returns a list
 #include "pythonic/types/content_of.hpp"
+#include "pythonic/types/traits.hpp"
 #include "pythonic/utils/int_.hpp"
 
 
@@ -218,6 +219,13 @@ namespace pythonic {
                     bool operator<(array<T, M> const& other) const {
                         return std::lexicographical_compare(begin(), end(), other.begin(), other.end());
                     }
+                template<size_t M>
+                    array<T, N + M> operator+(array<T, M> const& other) const {
+                        array<T, N + M> result;
+                        auto next = std::copy(begin(), end(), result.begin());
+                        std::copy(other.begin(), other.end(), next);
+                        return result;
+                    }
 
                 template<class... Types>
                     operator std::tuple<Types...>() const {
@@ -232,7 +240,7 @@ namespace pythonic {
                     types::slice norm = s.normalize(size());
                     list<T> out(norm.size());
                     for(long i=0; i< out.size(); i++)
-                        out[i] = buffer[norm.lower + i * norm.step];
+                        out[i] = buffer[norm.get(i)];
                     return out;
                 }
 
@@ -481,6 +489,18 @@ namespace pythonic {
                 print_tuple(os, t, utils::int_<sizeof...(Args)-1>());
                 return os << ')';
             }
+
+        template<class T, size_t N>
+            struct len_of<array<T,N>>
+            {
+                static constexpr long value = N;
+            };
+
+        template<class... Types>
+            struct len_of<std::tuple<Types...>>
+            {
+                static constexpr long value = sizeof...(Types);
+            };
     }
 }
 

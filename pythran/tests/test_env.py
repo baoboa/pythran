@@ -1,8 +1,17 @@
 from pythran import compile_pythrancode
+from pythran.backend import Python
+from pythran.middlend import refine
+from pythran.passmanager import PassManager
+from pythran.toolchain import _parse_optimization
+import pythran.frontend as frontend
 from imp import load_dynamic
 import unittest
 import os
+import re
+import sys
 from numpy import ndarray
+import numpy.testing as npt
+import ast
 
 
 class TestEnv(unittest.TestCase):
@@ -17,9 +26,12 @@ class TestEnv(unittest.TestCase):
 
     def assertAlmostEqual(self, ref, res):
         if hasattr(ref, '__iter__'):
-            self.assertEqual(len(ref), len(res))
-            for iref, ires in zip(ref, res):
-                self.assertAlmostEqual(iref, ires)
+            if isinstance(ref, ndarray):
+                npt.assert_array_almost_equal(ref, res)
+            else:
+                self.assertEqual(len(ref), len(res))
+                for iref, ires in zip(ref, res):
+                    self.assertAlmostEqual(iref, ires)
         else:
             try:
                 unittest.TestCase.assertAlmostEqual(self, ref, res)
@@ -35,7 +47,6 @@ class TestEnv(unittest.TestCase):
                 print "Pythran result: ", pythran_res
                 self.assertAlmostEqual(python_ref, pythran_res)
         except ValueError:
-            # Element-wise comparison because with numpy array... FIXME (Pierrick)
             if hasattr(python_ref, '__iter__'):
                 self.assertEqual(len(python_ref), len(pythran_res))
                 for iref, ires in zip(python_ref, pythran_res):
@@ -53,7 +64,8 @@ class TestEnv(unittest.TestCase):
            interface (dict): pythran interface for the module to test.
                              Each key is the name of a function to call,
                              the value is a list of the arguments' type.
-                             Special keys are 'module_name', 'prelude', 'runas'
+                             Special keys are 'module_name', 'prelude',
+                             'runas', 'check_refcount', 'check_exception'
                              and 'check_output'.
 
         Returns: nothing.
@@ -70,33 +82,40 @@ class TestEnv(unittest.TestCase):
         prelude = interface.pop('prelude', None)
         check_output = interface.pop('check_output', True)
         runas = interface.pop('runas', None)
+        check_refcount = interface.pop('check_refcount', False)
+        check_exception = interface.pop('check_exception', False)
+        if runas:
+            # runas is a python code string to run the test. By convention
+            # the last statement of the sequence is the value to test.
+            # We insert ourselves a variable to capture this value:
+            # "a=1; b=2; myfun(a+b,a-b)" => "a=1; b=2; RES=myfun(a+b,a-b)"
+            runas_commands = runas.split(";")
+            begin = ";".join(runas_commands[:-1]+[''])
+            exec code+"\n"+begin in {}  # this just tests the syntax of runas
+            last = self.TEST_RETURNVAL + '=' + runas_commands[-1]
+            runas = begin+"\n"+last
 
         for name in sorted(interface.keys()):
-            if runas:
-                # runas is a python code string to run the test. By convention
-                # the last statement of the sequence is the value to test.
-                # We insert ourselves a variable to capture this value:
-                # "a=1; b=2; myfun(a+b,a-b)" => "a=1; b=2; RES=myfun(a+b,a-b)"
-                runas_commands = runas.split(";")
-                begin = ";".join(runas_commands[:-1]+[''])
-                exec code+"\n"+begin in {}  # this just tests the syntax of runas
-                last = self.TEST_RETURNVAL + '=' + runas_commands[-1]
-                runas = begin+"\n"+last
-            else:
+            if not runas:
                 # No runas provided, derive one from interface and params
                 attributes = []
+                runas = ""
                 for p in params:
                     if isinstance(p, str):
-                        attributes.append("'{0}'".format(p))
+                        param = "'{0}'".format(p)
                     elif isinstance(p, ndarray):
-                        attributes.append("numpy.{0}".format(
-                            repr(p).replace("\n", "")))
+                        param = "numpy.{0}".format(
+                            repr(p).replace("\n", "")
+                                   .replace("dtype=", "dtype=numpy."))
+                        runas = "import numpy\n"
                     else:
                          # repr preserve the "L" suffix for long
-                        attributes.append(repr(p))
+                        param = repr(p)
+                    attributes.append(param.replace("nan", "float('nan')")
+                                           .replace("inf", "float('inf')"))
                 arglist = ",".join(attributes)
                 function_call = "{0}({1})".format(name, arglist)
-                runas = self.TEST_RETURNVAL + '=' + function_call
+                runas += self.TEST_RETURNVAL + '=' + function_call
 
             # Caller may requires some cleaning
             prelude and prelude()
@@ -112,8 +131,12 @@ class TestEnv(unittest.TestCase):
                 if check_output:
                     exec refcode in env
                     python_ref = env[self.TEST_RETURNVAL]
+                    if check_refcount:
+                        python_refcount = sys.getrefcount(python_ref)
             except BaseException as e:
                 python_exception_type = type(e)
+                if not check_exception:
+                    raise
 
             # If no module name was provided, create one
             modname = module_name or ("test_" + name)
@@ -137,7 +160,14 @@ class TestEnv(unittest.TestCase):
                     pythran_exception_type = type(e)
                 else:
                     pythran_res = getattr(pymod, self.TEST_RETURNVAL)
+                    if check_refcount:
+                        pythran_refcount = sys.getrefcount(pythran_res)
+                        self.assertEqual(python_refcount, pythran_refcount)
                     # Test Results, assert if mismatch
+                    if python_exception_type:
+                        raise AssertionError(
+                                "expected exception was %s, but nothing happend!" %
+                                python_exception_type)
                     self.compare_pythonpythran_results(python_ref, pythran_res)
 
             finally:
@@ -152,6 +182,38 @@ class TestEnv(unittest.TestCase):
                     raise AssertionError(
                     "expected exception was %s, but received %s" %
                     (python_exception_type, pythran_exception_type))
+
+    def check_ast(self, code, ref, optimizations):
+        """
+            Check if a final node is the same as expected
+
+            Parameters
+            ----------
+            code : str
+                code we want to check after refine and optimizations
+            ref : str
+                The expected dump for the AST
+            optimizations : [optimization]
+                list of optimisation to apply
+
+            Raises
+            ------
+            is_same : AssertionError
+                Raise if the result is not the one expected.
+        """
+        pm = PassManager("testing")
+
+        ir, _ = frontend.parse(pm, code)
+
+        optimizations = map(_parse_optimization, optimizations)
+        refine(pm, ir, optimizations)
+
+        content = pm.dump(Python, ir)
+
+        if content != ref:
+            raise AssertionError(
+            "AST is not the one expected. Reference was %s,"
+            "but received %s" % (repr(ref), repr(content)))
 
 
 class TestFromDir(TestEnv):
@@ -218,7 +280,7 @@ class TestFromDir(TestEnv):
 
         def __call__(self):
             if "unittest.skip" in self.module_code:
-                return self.test_env.skipTest("Marked as skipable")
+                return self.test_env.skipTest("Marked as skippable")
             self.test_env.run_test(self.module_code,
                                    module_name=self.module_name,
                                    check_output=self.check_output,

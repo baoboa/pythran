@@ -1,6 +1,7 @@
 #ifndef PYTHONIC_TYPES_COMPLEX_HPP
 #define PYTHONIC_TYPES_COMPLEX_HPP
 
+#include "pythonic/types/attr.hpp"
 #include <complex>
 
 namespace std {
@@ -30,30 +31,22 @@ namespace std {
     }
 }
 
-#define GET_COMPLEX(T)\
-    template <int I>\
-T& getattr( std::complex<T>& );\
-template <>\
-T& getattr<0>( std::complex<T>& t) { return reinterpret_cast<T*>(&t)[0]; }\
-template <>\
-T& getattr<1>( std::complex<T>& t) { return reinterpret_cast<T*>(&t)[1]; }\
-\
-template <int I>\
-T const & getattr( std::complex<T> const & );\
-template <>\
-T const & getattr<0>( std::complex<T> const & t) { return reinterpret_cast<T const *>(&t)[0]; }\
-template <>\
-T const & getattr<1>( std::complex<T> const & t) { return reinterpret_cast<T const *>(&t)[1]; }\
-
-GET_COMPLEX(double)
+namespace pythonic {
+    namespace __builtin__ {
+        template <size_t AttributeID>
+            double getattr( std::complex<double> const &self) {
+                return AttributeID == pythonic::types::attr::REAL ? std::real(self) : std::imag(self);
+            }
+    }
+}
 
     /* for type inference { */
 
 #include "pythonic/types/combined.hpp"
-    template<class K>
-    struct __combined<indexable<K>, std::complex<double>> {
-        typedef std::complex<double> type;
-    };
+template<class K>
+struct __combined<indexable<K>, std::complex<double>> {
+    typedef std::complex<double> type;
+};
 
 template<class K>
 struct __combined<std::complex<double>, indexable<K>> {

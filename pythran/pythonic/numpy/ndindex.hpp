@@ -4,11 +4,17 @@
 #include "pythonic/utils/proxy.hpp"
 #include "pythonic/types/numpy_type.hpp"
 
+#include <numeric>
+
 namespace pythonic {
 
     namespace numpy {
         template<size_t N>
-            struct ndindex_iterator : std::iterator<std::random_access_iterator_tag, types::array<long, N> > {
+            struct ndindex_iterator : std::iterator<std::random_access_iterator_tag,
+                                                    types::array<long, N>,
+                                                    ptrdiff_t,
+                                                    types::array<long, N>*,
+                                                    types::array<long, N> /* reference_type, but no reference is possible*/  > {
                 long index;
                 types::array<long, N> shape;
                 ndindex_iterator(){}
@@ -49,6 +55,10 @@ namespace pythonic {
         template<class... Types>
             _ndindex<sizeof...(Types)> ndindex(Types... args) {
                 return _ndindex<sizeof...(Types)>(types::make_tuple(args...));
+            }
+        template<size_t N>
+            _ndindex<N> ndindex(types::array<long, N> const& args) {
+                return _ndindex<N>(args);
             }
 
         PROXY(pythonic::numpy, ndindex);

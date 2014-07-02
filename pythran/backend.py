@@ -8,8 +8,8 @@ import ast
 from cxxgen import *
 from cxxtypes import *
 
-from analysis import LocalDeclarations, GlobalDeclarations, Scope, Dependencies
-from analysis import YieldPoints, BoundedExpressions, ArgumentEffects
+from analyses import LocalDeclarations, GlobalDeclarations, Scope, Dependencies
+from analyses import YieldPoints, BoundedExpressions, ArgumentEffects
 from passmanager import Backend
 
 from tables import operator_to_lambda, modules, type_to_suffix
@@ -140,9 +140,11 @@ class Cxx(Backend):
                     hasfor = 'for' in directive.s
                     nodefault = 'default' not in directive.s
                     noindexref = all(x.id != target.id for x in directive.deps)
-                    if hasfor and nodefault and noindexref:
+                    if (hasfor and nodefault and noindexref and
+                            target.id not in self.scope[node]):
                         directive.s += ' private({})'
-                        directive.deps.append(ast.Name(target.id, ast.Param()))
+                        directive.deps.append(ast.Name(target.id, ast.Load()))
+                directive.deps = map(self.visit, directive.deps)
                 directives.append(directive)
             if index is None:
                 stmt = AnnotatedStatement(stmt, directives)
@@ -560,7 +562,7 @@ class Cxx(Backend):
         value = self.visit(node.value)
         target = self.visit(node.target)
         l = operator_to_lambda[type(node.op)]
-        if type(node.op) in (ast.FloorDiv,):
+        if type(node.op) in (ast.FloorDiv, ast.Mod, ast.Pow):
             stmt = Assign(target, l(target, value))
         else:
             stmt = Statement(l(target, '')[1:-2] + '= {0}'.format(value))
@@ -626,8 +628,9 @@ class Cxx(Backend):
             self.ldecls = {d for d in self.ldecls if d.id != node.target.id}
             loop = AutoFor(target, local_iter, loop_body)
         else:
-            if (metadata.get(node.target, metadata.LocalVariable) and
-                    not self.yields):
+            if node.target.id in self.scope[node] and not self.yields:
+                self.ldecls = {d for d in self.ldecls
+                               if d.id != node.target.id}
                 local_type = "typename decltype({})::reference ".format(
                     local_target)
             else:
@@ -843,7 +846,13 @@ class Cxx(Backend):
     def visit_Call(self, node):
         args = [self.visit(n) for n in node.args]
         func = self.visit(node.func)
-        return "{0}({1})".format(func, ", ".join(args))
+        # special hook for getattr, as we cannot represent it in C++
+        if func == 'pythonic::__builtin__::proxy::getattr{}':
+            return ('pythonic::__builtin__::getattr<{}>({})'
+                    .format('pythonic::types::attr::' + node.args[1].s.upper(),
+                            args[0]))
+        else:
+            return "{}({})".format(func, ", ".join(args))
 
     def visit_Num(self, node):
         if type(node.n) == complex:
@@ -882,11 +891,8 @@ class Cxx(Backend):
 
     def visit_Subscript(self, node):
         value = self.visit(node.value)
-        # attribute case
-        if metadata.get(node, metadata.Attribute):
-            return "getattr<{0}>({1})".format(node.slice.value.n, value)
         # positive static index case
-        elif (isinstance(node.slice, ast.Index)
+        if (isinstance(node.slice, ast.Index)
                 and isinstance(node.slice.value, ast.Num)
                 and (node.slice.value.n >= 0)
                 and any(isinstance(node.slice.value.n, t)
@@ -926,7 +932,12 @@ class Cxx(Backend):
             arg = (self.visit(nfield) if nfield
                    else 'pythonic::__builtin__::None')
             args.append(arg)
-        return "pythonic::types::slice({},{},{})".format(*args)
+        if node.step is None or (type(node.step) is ast.Num
+                                 and node.step.n == 1):
+            return "pythonic::types::contiguous_slice({},{})".format(args[0],
+                                                                     args[1])
+        else:
+            return "pythonic::types::slice({},{},{})".format(*args)
 
     def visit_Index(self, node):
         return self.visit(node.value)

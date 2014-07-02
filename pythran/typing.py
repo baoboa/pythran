@@ -8,12 +8,12 @@ import ast
 from numpy import ndarray
 import networkx as nx
 
-from tables import pytype_to_ctype_table, operator_to_lambda
-from tables import modules, methods, functions
-from analysis import GlobalDeclarations, YieldPoints, LocalDeclarations
-from analysis import OrderedGlobalDeclarations, ModuleAnalysis, StrictAliases
-from analysis import LazynessAnalysis
-from passes import Transformation
+from tables import (pytype_to_ctype_table, operator_to_lambda, modules,
+                    methods, functions)
+from analyses import (GlobalDeclarations, YieldPoints, LocalDeclarations,
+                      OrderedGlobalDeclarations, StrictAliases,
+                      LazynessAnalysis)
+from passmanager import ModuleAnalysis, Transformation
 from syntax import PythranSyntaxError
 from cxxtypes import *
 from intrinsic import UserFunction, MethodIntr
@@ -74,7 +74,7 @@ def pytype_to_deps(t):
     elif isinstance(t, tuple):
         return {'pythonic/types/tuple.hpp'}.union(*map(pytype_to_deps, t))
     elif isinstance(t, ndarray):
-        return {'pythonic/types/ndarray.hpp'}
+        return {'pythonic/types/ndarray.hpp'}.union(pytype_to_deps(t[0]))
     elif t in pytype_to_ctype_table:
         return {'pythonic/types/{}.hpp'.format(t.__name__)}
     else:
@@ -644,8 +644,13 @@ class Types(ModuleAnalysis):
                     self.result[node] = self.result[alias]
                     return
 
+        # special handler for getattr: use the attr name as an enum member
+        if type(node.func) is (ast.Attribute) and node.func.attr == 'getattr':
+            F = lambda f: GetAttr(self.result[node.args[0]], node.args[1].s)
         # default behavior
-        F = lambda f: ReturnType(f, [self.result[arg] for arg in node.args])
+        else:
+            F = lambda f: ReturnType(f,
+                                     [self.result[arg] for arg in node.args])
         # op is used to drop previous value there
         self.combine(node, node.func, op=lambda x, y: y, unary_op=F)
 
@@ -676,27 +681,30 @@ class Types(ModuleAnalysis):
 
     def visit_Slice(self, node):
         self.generic_visit(node)
-        self.result[node] = NamedType('pythonic::types::slice')
+        if node.step is None or (type(node.step) is ast.Num
+                                 and node.step.n == 1):
+            self.result[node] = NamedType('pythonic::types::contiguous_slice')
+        else:
+            self.result[node] = NamedType('pythonic::types::slice')
 
     def visit_Subscript(self, node):
         self.visit(node.value)
-        if metadata.get(node, metadata.Attribute):
-            f = lambda t: AttributeType(node.slice.value.n, t)
-        elif isinstance(node.slice, ast.ExtSlice):
-            d = sum(int(type(dim) is ast.Index) for dim in node.slice.dims)
-            f = lambda t: reduce(lambda x, y: ContentType(x), range(d), t)
-        elif isinstance(node.slice, ast.Slice):
+        # type of a[1:2, 3, 4:1] is the type of: declval(a)(slice, long, slice)
+        if isinstance(node.slice, ast.ExtSlice):
             self.visit(node.slice)
-            f = lambda x:  ExpressionType(
-                lambda a, b: "{0}[{1}]".format(a, b),
-                [x, self.result[node.slice]]
+            f = lambda t: ExpressionType(
+                lambda a, *b: "{0}({1})".format(a, ", ".join(b)),
+                [t] + [self.result[d] for d in node.slice.dims]
                 )
-        elif isinstance(node.slice.value, ast.Num) and node.slice.value.n >= 0:
+        elif (type(node.slice) is (ast.Index)
+                and type(node.slice.value) is ast.Num
+                and node.slice.value.n >= 0):
+            # type of a[2] is the type of an elements of a
+            # this special case is to make type inference easier
+            # for the back end compiler
             f = lambda t: ElementType(node.slice.value.n, t)
-        elif isinstance(node.slice.value, ast.Tuple):
-            f = lambda t: reduce(lambda x, y: ContentType(x),
-                                 node.slice.value.elts, t)
         else:
+            # type of a[i] is the return type of the matching function
             self.visit(node.slice)
             f = lambda x: ExpressionType(
                 lambda a, b: "{0}[{1}]".format(a, b),
